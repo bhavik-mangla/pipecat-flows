@@ -739,6 +739,9 @@ class FlowManager:
                         stacklevel=2,
                     )
 
+            # Trigger completion with new context
+            respond_immediately = node_config.get("respond_immediately", True)
+
             # Update LLM context
             await self._update_llm_context(
                 role_message=role_message,
@@ -746,17 +749,13 @@ class FlowManager:
                 task_messages=node_config["task_messages"],
                 functions=formatted_tools,
                 strategy=node_config.get("context_strategy"),
+                run_llm=respond_immediately,
             )
             logger.debug("Updated LLM context")
 
             # Update state
             self._current_node = node_id
             self._current_functions = new_functions
-
-            # Trigger completion with new context
-            respond_immediately = node_config.get("respond_immediately", True)
-            if respond_immediately:
-                await self._worker.queue_frames([LLMRunFrame()])
 
             # Execute post-actions if any
             if post_actions := node_config.get("post_actions"):
@@ -788,6 +787,7 @@ class FlowManager:
         task_messages: list[dict],
         functions: ToolsSchema | NotGiven,
         strategy: ContextStrategyConfig | None = None,
+        run_llm: bool = True,
     ) -> None:
         """Update LLM context with new messages and functions.
 
@@ -805,6 +805,7 @@ class FlowManager:
             task_messages: Task messages to add to context.
             functions: New functions to make available.
             strategy: Optional context update configuration.
+            run_llm: Whether to trigger LLM inference after the update.
 
         Raises:
             FlowError: If context update fails.
@@ -875,16 +876,16 @@ class FlowManager:
             messages.extend(task_messages)
 
             # For first node or RESET/RESET_WITH_SUMMARY strategy, use update frame
-            frame_type = (
-                LLMMessagesUpdateFrame
-                if self._current_node is None
+            is_reset = (
+                self._current_node is None
                 or update_config.strategy
                 in [ContextStrategy.RESET, ContextStrategy.RESET_WITH_SUMMARY]
-                else LLMMessagesAppendFrame
             )
 
-            frames.append(frame_type(messages=messages))
             frames.append(LLMSetToolsFrame(tools=functions))
+
+            frame_type = LLMMessagesUpdateFrame if is_reset else LLMMessagesAppendFrame
+            frames.append(frame_type(messages=messages, run_llm=run_llm))
 
             await self._worker.queue_frames(frames)
 
